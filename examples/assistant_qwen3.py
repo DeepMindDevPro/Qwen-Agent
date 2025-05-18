@@ -3,117 +3,116 @@ import os  # noqa
 
 from qwen_agent.agents import Assistant
 from qwen_agent.gui import WebUI
-from qwen_agent.utils.output_beautify import typewriter_print
 
-
+'''
+助手设计使用模块化:
+1.程序配置与初始化
+2.工具调用系统集成
+3.Web用户界面
+'''
 def init_agent_service():
+    '''
+    初始化并配置智能助手服务
+    返回配置好的Assistant实例
+    '''
+    # LLM参数
     llm_cfg = {
-        # Use the model service provided by DashScope:
-        'model': 'qwen3-235b-a22b',
-        'model_type': 'qwen_dashscope',
-
-        # 'generate_cfg': {
-        #     # When using the Dash Scope API, pass the parameter of whether to enable thinking mode in this way
-        #     'enable_thinking': False,
-        # },
+        'model': 'qwen3:8b', # 指定使用的模型名称，需与ollama服务中的名称一致
+        'model_type': 'oai',  # 使用OpenAI兼容模式，便于与ollama服务对接
+        'model_server': 'http://localhost:11434/v1',  # Ollama服务的API地址
+        'api_key': 'EMPTY', # 本地服务无需API密钥
+        'generate_cfg': {
+            'extra_body': {
+                # 基础参数
+                'temperature': 0.7, # 控制生成文本的随机性，值越低越确定 # 控制随机性 (0.0-2.0)
+                'max_tokens': 2048, # 最大生成长度
+                'stop': ['<|endoftext|>'], # 指定停止生成的标记
+                # #高级参数
+                'top_p': 0.9,  # 核采样概率阈值
+                'top_k': 40,  # 采样时考虑的最高概率token数量
+                'presence_penalty': 0.0,  # 惩罚新话题的引入 (-2.0-2.0)
+                'frequency_penalty': 0.0,  # 惩罚重复tokens (-2.0-2.0)
+                'repeat_penalty': 1.1,  # 重复惩罚因子 (Ollama特有参数)
+                'mirostat_mode': 0,  # Mirostat算法模式 (0=关闭, 1=v1, 2=v2)
+                'mirostat_tau': 5.0,  # Mirostat目标熵
+                'mirostat_eta': 0.1,  # Mirostat学习率
+                # 'stream': False,  # 是否流式输出
+                # 'logprobs': None,  # 是否返回log概率
+                # 'echo': False,  # 是否回显输入
+            }
+        }
     }
-    # llm_cfg = {
-    #     # Use the OpenAI-compatible model service provided by DashScope:
-    #     'model': 'qwen3-235b-a22b',
-    #     'model_server': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    #     'api_key': os.getenv('DASHSCOPE_API_KEY'),
-    #
-    #     # 'generate_cfg': {
-    #     #     # When using Dash Scope OAI API, pass the parameter of whether to enable thinking mode in this way
-    #     #     'extra_body': {
-    #     #         'enable_thinking': False
-    #     #     },
-    #     # },
-    # }
-    # llm_cfg = {
-    #     # Use your own model service compatible with OpenAI API by vLLM/SGLang:
-    #     'model': 'Qwen/Qwen3-32B',
-    #     'model_server': 'http://localhost:8000/v1',  # api_base
-    #     'api_key': 'EMPTY',
-    #
-    #     'generate_cfg': {
-    #         # When using vLLM/SGLang OAI API, pass the parameter of whether to enable thinking mode in this way
-    #         'extra_body': {
-    #             'chat_template_kwargs': {'enable_thinking': False}
-    #         },
-    #
-    #         # Add: When the content is `<think>this is the thought</think>this is the answer`
-    #         # Do not add: When the response has been separated by reasoning_content and content
-    #         # This parameter will affect the parsing strategy of tool call
-    #         # 'thought_in_content': True,
-    #     },
-    # }
+
+    #配置助手可以使用的工具列表
     tools = [
         {
-            'mcpServers': {  # You can specify the MCP configuration file
+            'mcpServers':
+             {  # MCP服务器工具配置
                 'time': {
-                    'command': 'uvx',
-                    'args': ['mcp-server-time', '--local-timezone=Asia/Shanghai']
+                    'command': 'uvx', # 执行命令
+                    'args': ['mcp-server-time', '--local-timezone=Asia/Shanghai'] # 带时区参数的时间获取命令
                 },
                 'fetch': {
-                    'command': 'uvx',
-                    'args': ['mcp-server-fetch']
+                    'command': 'uvx', # 执行命令
+                    'args': ['mcp-server-fetch'] #网络内容获取命令
                 }
             }
         },
-        'code_interpreter',  # Built-in tools
+        'code_interpreter', # 内置的代码解释器工具，可执行代码并返回结果
     ]
-    bot = Assistant(llm=llm_cfg,
-                    function_list=tools,
-                    name='Qwen3 Tool-calling Demo',
-                    description="I'm a demo using the Qwen3 tool calling. Welcome to add and play with your own tools!")
 
+    # 初始化助手实例
+    bot = Assistant(
+        # 传入LLM配置
+        llm=llm_cfg,
+        # 传入工具列表
+        function_list=tools,
+        # 助手名称
+        name='小葛的千问助手',
+        description="我是千问助手")
     return bot
 
 
-def test(query: str = 'What time is it?'):
-    # Define the agent
-    bot = init_agent_service()
-
-    # Chat
-    messages = [{'role': 'user', 'content': query}]
-    response_plain_text = ''
-    for response in bot.run(messages=messages):
-        response_plain_text = typewriter_print(response, response_plain_text)
-
-
-def app_tui():
-    # Define the agent
-    bot = init_agent_service()
-
-    # Chat
-    messages = []
-    while True:
-        query = input('user question: ')
-        messages.append({'role': 'user', 'content': query})
-        response = []
-        response_plain_text = ''
-        for response in bot.run(messages=messages):
-            response_plain_text = typewriter_print(response, response_plain_text)
-        messages.extend(response)
-
-
 def app_gui():
-    # Define the agent
+    """
+    初始化并启动Web用户界面
+    """
     bot = init_agent_service()
+    # 配置聊天界面
     chatbot_config = {
         'prompt.suggestions': [
+            # 示例提示：询问当前时间
             'What time is it?',
+            # 示例提示：网页内容提取与可视化
             'https://github.com/orgs/QwenLM/repositories Extract markdown content of this page, then draw a bar chart to display the number of stars.'
-        ]
+        ],
+        # 新增界面配置
+        'ui_config': {
+            'theme': 'dark',  # 支持明暗主题切换
+            'max_history_length': 50,  # 历史消息最大数量
+            'show_code_preview': True,  # 代码块预览功能
+            'enable_file_upload': True,  # 支持文件上传
+            'custom_styles': {  # 自定义样式
+                'primary_color': '#165DFF',
+                'font_family': 'Inter, sans-serif'
+            }
+        },
+        # 新增快捷键配置
+        'keyboard_shortcuts': {
+            'send_message': 'Ctrl+Enter',
+            'new_chat': 'Ctrl+N',
+            'clear_history': 'Ctrl+Shift+H'
+        }
     }
+    # 创建并运行Web界面
     WebUI(
+        # 传入助手实例
         bot,
-        chatbot_config=chatbot_config,
-    ).run()
+        # 传入界面配置
+        chatbot_config=chatbot_config
+    ).run(server_port=8090)
 
 
 if __name__ == '__main__':
-    # test()
-    # app_tui()
+    # 程序入口点，启动Web界面
     app_gui()
