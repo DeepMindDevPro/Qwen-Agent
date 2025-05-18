@@ -449,6 +449,7 @@ def merge_generate_cfgs(base_generate_cfg: Optional[dict], new_generate_cfg: Opt
         for k, v in new_generate_cfg.items():
             if k == 'stop':
                 stop = generate_cfg.get('stop', [])
+                #将 new_generate_cfg 中 'stop' 键对应的值（列表）与 generate_cfg 中的 'stop' 值合并，去除重复项.
                 stop = stop + [s for s in v if s not in stop]
                 generate_cfg['stop'] = stop
             else:
