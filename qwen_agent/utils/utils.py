@@ -91,6 +91,10 @@ def has_chinese_messages(messages: List[Union[Message, dict]], check_roles: Tupl
     return False
 
 
+'''
+这个方法的核心功能是从文件路径或 URL 中提取最后的文件名或路径片段（即 "basename"），并处理各种边界情况，
+确保结果的正确性和可读性。它主要用于处理文件路径、URL 链接，提取其中有意义的名称部分
+'''
 def get_basename_from_url(path_or_url: str) -> str:
     if re.match(r'^[A-Za-z]:\\', path_or_url):
         # "C:\\a\\b\\c" -> "C:/a/b/c"
@@ -310,26 +314,31 @@ def json_dumps_compact(obj: dict, ensure_ascii=False, indent=None, **kwargs) -> 
     return json.dumps(obj, ensure_ascii=ensure_ascii, indent=indent, cls=PydanticJSONEncoder, **kwargs)
 
 
+# 此函数用于将消息格式化为多模态消息，根据不同的条件添加上传信息
 def format_as_multimodal_message(
-    msg: Message,
-    add_upload_info: bool,
-    add_multimodel_upload_info: bool,
-    add_audio_upload_info: bool,
-    lang: Literal['auto', 'en', 'zh'] = 'auto',
+    msg: Message, # 输入的消息对象
+    add_upload_info: bool, # 是否添加上传信息的标志
+    add_multimodel_upload_info: bool, # 是否添加多模态上传信息的标志
+    add_audio_upload_info: bool, # 是否添加音频上传信息的标志
+    lang: Literal['auto', 'en', 'zh'] = 'auto', #语言类型，默认为自动检测
 ) -> Message:
+    #  # 断言消息的角色必须是用户、助手、系统或函数调用
     assert msg.role in (USER, ASSISTANT, SYSTEM, FUNCTION)
     content: List[ContentItem] = []
     if isinstance(msg.content, str):  # if text content
         content = [ContentItem(text=msg.content)]
+    # 如果消息内容是列表类型，即多模态内容
     elif isinstance(msg.content, list):  # if multimodal content
         files = []
         for item in msg.content:
             k, v = item.get_type_and_value()
+            # 消息的类型
             if k in ('text', 'image', 'audio', 'video'):
                 content.append(item)
-            if k == 'file':
+            if k == 'file': #文件
                 # Move 'file' out of 'content' since it's not natively supported by models
                 files.append((v, k))
+            # 照片 & 视频
             if add_multimodel_upload_info and k in ('image', 'video'):
                 # Indicate the image name
                 if isinstance(v, str):
@@ -339,7 +348,7 @@ def format_as_multimodal_message(
                         files.append((_v, k))
                 else:
                     raise TypeError
-
+            # 音频
             if add_audio_upload_info and k == 'audio':
                 if isinstance(v, str):
                     files.append((v, k))
@@ -347,16 +356,28 @@ def format_as_multimodal_message(
                     files.append((v['data'], k))
                 else:
                     raise TypeError
+        # 多模态文件处理
         if add_upload_info and files and (msg.role in (SYSTEM, USER)):
             if lang == 'auto':
+                # 是否存在中文
                 has_zh = has_chinese_chars(msg)
             else:
                 has_zh = (lang == 'zh')
             upload = []
+            '''
+            files = [
+                ("https://example.com/data/report.pdf", "file1"),
+                ("C:/Users/docs/image.jpg", "file2"),
+                ("ftp://server/logs/access.log", "file3")
+             ]
+            '''
             for f, k in [(get_basename_from_url(f), k) for f, k in files]:
+                # 图片
                 if k == 'image':
+                    # 中文
                     if has_zh:
                         upload.append(f'![图片]({f})')
+                    # 英文
                     else:
                         upload.append(f'![image]({f})')
                 elif k == 'video':
@@ -370,6 +391,7 @@ def format_as_multimodal_message(
                     else:
                         upload.append(f'![audio]({f})')
                 else:
+                    # 文本
                     if has_zh:
                         upload.append(f'[文件]({f})')
                     else:
@@ -385,7 +407,7 @@ def format_as_multimodal_message(
             for item in content:
                 if item.text and (upload in item.text):
                     upload_info_already_added = True
-
+            # 要是没有添加过, 则进行添加
             if not upload_info_already_added:
                 content = [ContentItem(text=upload)] + content
     else:
@@ -399,6 +421,7 @@ def format_as_multimodal_message(
     return msg
 
 
+# 将消息转成文本
 def format_as_text_message(
     msg: Message,
     add_upload_info: bool,
@@ -443,6 +466,7 @@ def extract_files_from_messages(messages: List[Message], include_images: bool) -
     return files
 
 
+# 合并配置
 def merge_generate_cfgs(base_generate_cfg: Optional[dict], new_generate_cfg: Optional[dict]) -> dict:
     generate_cfg: dict = copy.deepcopy(base_generate_cfg or {})
     if new_generate_cfg:

@@ -256,6 +256,8 @@ class BaseChatModel(ABC):
         if DEFAULT_SYSTEM_MESSAGE and messages[0].role != SYSTEM:
             # 如果有默认系统消息且第一条消息不是系统消息，添加系统消息
             messages = [Message(role=SYSTEM, content=DEFAULT_SYSTEM_MESSAGE)] + messages
+            print('messages[0]:')
+            print(messages[0])
 
         # 粗略截断输入消息，避免超过最大输入令牌数
         max_input_tokens = generate_cfg.pop('max_input_tokens', DEFAULT_MAX_INPUT_TOKENS)
@@ -270,9 +272,24 @@ class BaseChatModel(ABC):
             fncall_mode = True
         else:
             fncall_mode = False
+        # 在与大语言模型（LLM）进行交互时，函数调用是一种重要的机制，允许模型根据输入的消息和可用的函数来调用特定的函数。
+        # function_choice 参数用于控制模型如何选择调用的函数
         if 'function_choice' in generate_cfg:
             # 检查 function_choice 参数是否合法
             fn_choice = generate_cfg['function_choice']
+            '''
+            1. dict.get() 方法
+                在 Python 里，字典的 get() 方法用来获取字典中指定键的值。它接受两个参数：
+                第一个参数是要查找的键。
+                第二个参数是当指定的键不存在时返回的默认值。如果不提供这个参数，默认值就是 None。
+            2. f.get('name', f.get('name_for_model', None)) 的工作原理
+                首先尝试从字典 f 里获取键 'name' 对应的值。
+                要是 'name' 这个键存在于字典 f 中，就返回该键对应的值。
+                若 'name' 键不存在，就调用 f.get('name_for_model', None)。
+                这里又尝试从字典 f 中获取键 'name_for_model' 对应的值。
+                若 'name_for_model' 键存在，就返回该键对应的值。
+                若 'name_for_model' 键也不存在，就返回 None。
+            '''
             valid_fn_choices = [f.get('name', f.get('name_for_model', None)) for f in (functions or [])]
             valid_fn_choices = ['auto', 'none'] + [f for f in valid_fn_choices if f]
             if fn_choice not in valid_fn_choices:
@@ -287,13 +304,17 @@ class BaseChatModel(ABC):
             # 如果不支持多模态输入，将消息转换为文本消息
             messages = [format_as_text_message(msg, add_upload_info=False) for msg in messages]
 
+        # 不是function_call_mode
         if not fncall_mode:
             # 如果不开启函数调用模式，删除相关配置
             for k in ['parallel_function_calls', 'function_choice', 'thought_in_content']:
                 if k in generate_cfg:
                     del generate_cfg[k]
 
+        # 典型的大语言模型（LLM）服务调用逻辑，主要负责根据不同的模式（函数调用 / 普通对话）、
+        # 输出格式（流式 / 非流式）和重试策略来调用模型，并对输出进行后处理
         def _call_model_service():
+            # 当fncall_mode为真时，调用_chat_with_functions，支持与外部工具交互，适用于需要调用 API 或工具的场景
             if fncall_mode:
                 # 如果开启函数调用模式，调用 _chat_with_functions 方法
                 return self._chat_with_functions(
@@ -304,12 +325,14 @@ class BaseChatModel(ABC):
                     generate_cfg=generate_cfg,
                     lang=lang,
                 )
-            else:
-                # 否则，根据消息情况调用相应方法
+            else: # 普通对话
+                # 续答逻辑：若最后一条消息是ASSISTANT（即模型之前已回复过），调用_continue_assistant_response，
+                # 用于处理多轮对话中的续写。
                 if messages[-1].role == ASSISTANT:
                     assert not delta_stream, 'Continuation mode does not currently support `delta_stream`'
                     return self._continue_assistant_response(messages, generate_cfg=generate_cfg, stream=stream)
                 else:
+                    # 新对话逻辑：否则调用普通聊天方法_chat
                     return self._chat(
                         messages,
                         stream=stream,
@@ -326,7 +349,7 @@ class BaseChatModel(ABC):
         else:
             # 如果不使用流式输出，进行重试
             output = retry_model_service(_call_model_service, max_retries=self.max_retries)
-
+        # 模型输出处理
         if isinstance(output, list):
             # 如果输出是列表，说明不是流式输出
             assert not stream
@@ -367,6 +390,7 @@ class BaseChatModel(ABC):
             # 将消息迭代器转换为目标类型
             return self._convert_messages_iterator_to_target_type(_format_and_cache(), _return_message_type)
 
+    # 普通对话
     def _chat(
             self,
             messages: List[Union[Message, Dict]],
@@ -394,6 +418,7 @@ class BaseChatModel(ABC):
         # 抽象方法，用于处理带函数调用的聊天，子类必须实现
         raise NotImplementedError
 
+   # 助手模式
     def _continue_assistant_response(
             self,
             messages: List[Message],
@@ -403,6 +428,7 @@ class BaseChatModel(ABC):
         # 抽象方法，用于继续生成助手的响应，子类必须实现
         raise NotImplementedError
 
+   # 流式对话抽象
     @abstractmethod
     def _chat_stream(
             self,
@@ -413,6 +439,7 @@ class BaseChatModel(ABC):
         # 抽象方法，用于流式聊天，子类必须实现
         raise NotImplementedError
 
+    # 非流式抽象
     @abstractmethod
     def _chat_no_stream(
             self,
@@ -422,6 +449,9 @@ class BaseChatModel(ABC):
         # 抽象方法，用于非流式聊天，子类必须实现
         raise NotImplementedError
 
+
+    #_preprocess_messages 方法主要用于对输入的消息列表进行预处理，以便后续将其作为输入传递给大语言模型。
+    # 这个预处理过程包括根据模型的能力和是否提供函数列表来决定是否添加多模态上传信息和音频上传信息，然后将消息统一格式化为多模态消息
     def _preprocess_messages(
             self,
             messages: List[Message],
@@ -447,6 +477,7 @@ class BaseChatModel(ABC):
         ]
         return messages
 
+    # 处理后消息
     def _postprocess_messages(
             self,
             messages: List[Message],
@@ -455,17 +486,20 @@ class BaseChatModel(ABC):
     ) -> List[Message]:
         # 格式化消息为多模态消息，不添加上传信息
         messages = [
+            # 处理多模态: 此函数用于将消息格式化为多模态消息，根据不同的条件添加上传信息
             format_as_multimodal_message(msg,
                                          add_upload_info=False,
                                          add_multimodel_upload_info=False,
                                          add_audio_upload_info=False) for msg in messages
         ]
+        # 不跳过停止词处理
         if not generate_cfg.get('skip_stopword_postproc', False):
             # 如果不跳过停止词后处理，处理停止词
             stop = generate_cfg.get('stop', [])
             messages = _postprocess_stop_words(messages, stop=stop)
         return messages
 
+    # 迭代后续处理消息
     def _postprocess_messages_iterator(
             self,
             messages: Iterator[List[Message]],
@@ -479,6 +513,7 @@ class BaseChatModel(ABC):
         # 打印 LLM 输出信息
         logger.debug(f'LLM Output:\n{pformat([_.model_dump() for _ in pre_msg], indent=2)}')
 
+    # 处理消息为转成目标类型
     def _convert_messages_to_target_type(self, messages: List[Message],
                                          target_type: str) -> Union[List[Message], List[Dict]]:
         if target_type == 'message':
@@ -491,6 +526,7 @@ class BaseChatModel(ABC):
             # 如果目标类型不合法，抛出 NotImplementedError 异常
             raise NotImplementedError
 
+    # 消息转成迭代类型
     def _convert_messages_iterator_to_target_type(
             self, messages_iter: Iterator[List[Message]],
             target_type: str) -> Union[Iterator[List[Message]], Iterator[List[Dict]]]:
@@ -498,6 +534,7 @@ class BaseChatModel(ABC):
             # 对每个消息列表进行类型转换
             yield self._convert_messages_to_target_type(messages, target_type)
 
+    # 快速oai模式回答
     def quick_chat_oai(self, messages: List[dict], tools: Optional[list] = None) -> dict:
         """
         This is a temporary OpenAI-compatible interface that is encapsulated and may change at any time.
@@ -506,7 +543,6 @@ class BaseChatModel(ABC):
         - The message is in dict format
         - Only supports text LLM
         """
-
         def _convert_to_qwen_agent_messages(messages):
             new_messages = []
             for msg in messages:
@@ -516,15 +552,16 @@ class BaseChatModel(ABC):
                     # 将 'tool' 角色转换为 'function' 角色
                     msg['role'] = 'function'
                     new_messages.append(msg)
+                # 消息模式为助手
                 elif msg['role'] == 'assistant':
-                    if msg['content']:
+                    if msg['content']: # content是存在的
                         new_messages.append({'role': 'assistant', 'content': msg['content']})
-                    if msg.get('tool_calls'):
+                    if msg.get('tool_calls'): # 存在调用工具 (function_call)
                         for tool in msg.get('tool_calls'):
                             new_messages.append({
                                 'role': 'assistant',
                                 'content': '',
-                                'function_call': {
+                                'function_call': {  # function_call参数
                                     'name': tool['function']['name'],
                                     'arguments': tool['function']['arguments']
                                 }
@@ -532,15 +569,17 @@ class BaseChatModel(ABC):
             return new_messages
 
         def _convert_to_oai_message(data):
+            # 角色为助手
             message = {'role': 'assistant', 'content': '', 'reasoning_content': '', 'tool_calls': []}
 
             for item in data:
+                # 推理内容
                 if item.get('reasoning_content'):
                     message['reasoning_content'] += item['reasoning_content']
-
+                # 消息文本
                 if item.get('content'):
                     message['content'] += item['content']
-
+                # function_call参数配置
                 if 'function_call' in item:
                     tool_call = {
                         'id': f"{len(message['tool_calls']) + 1}",
@@ -550,11 +589,12 @@ class BaseChatModel(ABC):
                             'arguments': item['function_call']['arguments']
                         }
                     }
+                    # function_call工具集合
                     message['tool_calls'].append(tool_call)
             # 伪造令牌使用信息
             response = {
                 'choices': [{
-                    'message': message
+                    'message': message # 消息结构
                 }],
                 'usage': {
                     'prompt_tokens': 0,
@@ -565,15 +605,16 @@ class BaseChatModel(ABC):
             return response
 
         if tools:
+            # 获取所有的function_call的集合
             functions = [tool['function'] for tool in tools]
         else:
             functions = None
         for rsp in self.chat(
                 messages=_convert_to_qwen_agent_messages(messages),
                 functions=functions,
-                stream=True,
-        ):
+                stream=True,):
             # 对每个响应进行转换并生成
+            # 流式输出: 使用 yield 将转换后的结果立即返回给调用者，实现端到端的流式传输
             yield _convert_to_oai_message(rsp)
 
 
@@ -589,6 +630,7 @@ def _format_as_text_messages(messages: List[Message]) -> List[Message]:
     return messages
 
 
+# 需要测试用例支持
 # 处理停止词，确保消息在停止词之前停止
 def _postprocess_stop_words(messages: List[Message], stop: List[str]) -> List[Message]:
     messages = copy.deepcopy(messages)
@@ -615,6 +657,7 @@ def _postprocess_stop_words(messages: List[Message], stop: List[str]) -> List[Me
     # The following post-processing step removes partial stop words.
     partial_stop = []
     for s in stop:
+        # 文本转成tokens
         s = tokenizer.tokenize(s)[:-1]
         if s:
             s = tokenizer.convert_tokens_to_string(s)
@@ -632,6 +675,7 @@ def _postprocess_stop_words(messages: List[Message], stop: List[str]) -> List[Me
     return messages
 
 
+# 增加测试用例
 # 在文本中查找停止词并截断文本
 def _truncate_at_stop_word(text: str, stop: List[str]):
     truncated = False
@@ -653,14 +697,16 @@ def _truncate_input_messages_roughly(messages: List[Message], max_tokens: int) -
                     ' And the system message, if exists, must be the first message.',
         )
 
+    #turns：用于存储对话轮次的列表，每个元素是一个子列表，表示一轮对话
     turns = []
     for m in messages:
         if m.role == SYSTEM:
             continue
         elif m.role == USER:
             turns.append([m])
-        else:
+        else: #如果消息的角色既不是 SYSTEM 也不是 USER（通常是 ASSISTANT 或 FUNCTION），则将该消息添加到当前对话轮次的子列表中
             if turns:
+                #如果不为空，将消息添加到 turns 列表的最后一个子列表中
                 turns[-1].append(m)
             else:
                 # 如果消息不以用户消息开头，抛出 ModelServiceError 异常
@@ -670,15 +716,18 @@ def _truncate_input_messages_roughly(messages: List[Message], max_tokens: int) -
                 )
 
     def _count_tokens(msg: Message) -> int:
-        # 计算消息的令牌数
+        # 计算消息的令牌数 & add_upload_info=True 表示在提取文本时包含上传信息
         return tokenizer.count_tokens(extract_text_from_message(msg, add_upload_info=True))
 
+   # 对输入的消息列表 messages 进行粗略截断
     def _truncate_message(msg: Message, max_tokens: int, keep_both_sides: bool = False):
+        # 如果 msg.content 是字符串类型，直接调用 tokenizer.truncate 方法进行截断
         if isinstance(msg.content, str):
             # 截断字符串类型的消息内容
             content = tokenizer.truncate(msg.content, max_token=max_tokens, keep_both_sides=keep_both_sides)
         else:
             text = []
+            # 列表类型: 将列表中的每个元素的 text 属性提取出来，用换行符连接成一个字符串，再调用 tokenizer.truncate 方法进行截断
             for item in msg.content:
                 if not item.text:
                     return None
@@ -688,9 +737,11 @@ def _truncate_input_messages_roughly(messages: List[Message], max_tokens: int) -
             content = tokenizer.truncate(text, max_token=max_tokens, keep_both_sides=keep_both_sides)
         return Message(role=msg.role, content=content)
 
+   # 判断令牌数量
     if messages and messages[0].role == SYSTEM:
         # 如果第一条消息是系统消息，计算可用令牌数
         sys_msg = messages[0]
+        # 减去可用令牌数量
         available_token = max_tokens - _count_tokens(sys_msg)
     else:
         sys_msg = None
@@ -698,30 +749,37 @@ def _truncate_input_messages_roughly(messages: List[Message], max_tokens: int) -
 
     token_cnt = 0
     new_messages = []
+    # range(start, stop, step)：生成从 start 开始，以 step 为步长，到小于 stop 的整数序列
+    # 从 messages 列表的最后一个元素开始，反向遍历到第一个元素
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].role == SYSTEM:
             continue
+        # 计算每条消息的列表
         cur_token_cnt = _count_tokens(messages[i])
         if cur_token_cnt <= available_token:
             # 如果当前消息的令牌数小于等于可用令牌数，添加到新消息列表中
+            # 将messages 列表中索引为 i 的元素插入到 new_messages 列表的开头
             new_messages = [messages[i]] + new_messages
             available_token -= cur_token_cnt
+        # 超过token的限制
         else:
             if (messages[i].role == USER) and (i != len(messages) - 1):
                 # 如果是用户消息且不是最后一条消息，截断消息
                 _msg = _truncate_message(messages[i], max_tokens=available_token)
                 if _msg:
+                    # 插入到 new_messages 列表的开头
                     new_messages = [_msg] + new_messages
                 break
             elif messages[i].role == FUNCTION:
                 # 如果是函数消息，截断消息并保留两边内容
                 _msg = _truncate_message(messages[i], max_tokens=available_token, keep_both_sides=True)
                 if _msg:
+                    # 插入到 new_messages 列表的开头
                     new_messages = [_msg] + new_messages
                 else:
                     break
             else:
-                # 计算总令牌数
+                # 计算总令牌数 (此时token_cnt > max_tokens)
                 token_cnt = (max_tokens - available_token) + cur_token_cnt
                 break
 
@@ -729,6 +787,7 @@ def _truncate_input_messages_roughly(messages: List[Message], max_tokens: int) -
         # 如果有系统消息，添加到新消息列表开头
         new_messages = [sys_msg] + new_messages
 
+    # 缺乏终端有效的消息prompt输入
     if (sys_msg is not None and len(new_messages) < 2) or (sys_msg is None and len(new_messages) < 1):
         # 如果新消息列表长度不足，抛出 ModelServiceError 异常
         raise ModelServiceError(
